@@ -124,7 +124,7 @@ defmt = { version = "1", default-features = false, features = ["ip_in_core"] }
 edge-captive = { version = "0.7", path = "edge-captive", default-features = false }
 edge-dhcp = { version = "0.7", path = "edge-dhcp", default-features = false }
 edge-http = { version = "0.7", path = "edge-http", default-features = false }
-edge-mdns = { version = "0.7", path = "edge-mdns", default-features = false }
+edge-mdns = { version = "0.8", path = "edge-mdns", default-features = false }
 edge-nal = { version = "0.7", path = "edge-nal", default-features = false, registry = "kellnr" }
 edge-raw = { version = "0.7", path = "edge-raw", default-features = false }
 edge-ws = { version = "0.7", path = "edge-ws", default-features = false }
