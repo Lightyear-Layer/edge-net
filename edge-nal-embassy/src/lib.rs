@@ -6,10 +6,7 @@
 
 use core::cell::{Cell, UnsafeCell};
 use core::mem::MaybeUninit;
-use core::net::{IpAddr, SocketAddr};
 use core::ptr::NonNull;
-
-use embassy_net::{IpAddress, IpEndpoint, IpListenEndpoint};
 
 #[cfg(feature = "dns")]
 pub use dns::*;
@@ -128,45 +125,6 @@ impl<T, const N: usize> Pool<T, N> {
         assert!(n >= 0);
         assert!((n as usize) < N);
         self.used[n as usize].set(false);
-    }
-}
-
-/// Convert an embassy-net `IpEndpoint` to a standard library `SocketAddr`.
-pub(crate) fn to_net_socket(socket: IpEndpoint) -> SocketAddr {
-    SocketAddr::new(socket.addr.into(), socket.port)
-}
-
-/// Convert an embassy-net `IpListenEndpoint` to a standard library `SocketAddr`.
-pub(crate) fn to_emb_socket(socket: SocketAddr) -> Option<IpEndpoint> {
-    Some(IpEndpoint {
-        addr: to_emb_addr(socket.ip())?,
-        port: socket.port(),
-    })
-}
-
-/// Convert a standard library `SocketAddr` to an embassy-net `IpListenEndpoint`.
-pub(crate) fn to_emb_bind_socket(socket: SocketAddr) -> Option<IpListenEndpoint> {
-    let addr = if socket.ip().is_unspecified() {
-        None
-    } else {
-        Some(to_emb_addr(socket.ip())?)
-    };
-
-    Some(IpListenEndpoint {
-        addr,
-        port: socket.port(),
-    })
-}
-
-/// Convert an embassy-net `IpAddress` to a standard library `IpAddr`.
-pub(crate) fn to_emb_addr(addr: IpAddr) -> Option<IpAddress> {
-    match addr {
-        #[cfg(feature = "proto-ipv4")]
-        IpAddr::V4(addr) => Some(addr.into()),
-        #[cfg(feature = "proto-ipv6")]
-        IpAddr::V6(addr) => Some(addr.into()),
-        #[allow(unreachable_patterns)]
-        _ => None,
     }
 }
 

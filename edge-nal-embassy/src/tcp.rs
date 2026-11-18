@@ -9,13 +9,14 @@ use edge_nal::{Close, Readable, TcpBind, TcpConnect, TcpShutdown, TcpSplit};
 
 use embassy_futures::join::join;
 
-use embassy_net::tcp::{AcceptError, ConnectError, Error, TcpReader, TcpWriter};
+use embassy_net::tcp::{AcceptError, ConnectError, Error, ListenError, TcpListener, TcpReader, TcpWriter};
 use embassy_net::Stack;
 
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
+use xarxa::error::Full;
 
 use crate::sealed::SealedDynPool;
-use crate::{to_emb_bind_socket, to_emb_socket, to_net_socket, DynPool, Pool};
+use crate::{DynPool, Pool};
 
 /// A type that implements the `TcpConnect` and `TcpBind` factory traits from `edge-nal`
 /// Uses the provided Embassy networking stack and TCP buffers pool to create TCP sockets.
@@ -43,11 +44,11 @@ impl<'d> Tcp<'d> {
     }
 }
 
-impl TcpConnect for Tcp<'_> {
+impl<'s> TcpConnect for Tcp<'s> {
     type Error = TcpError;
 
     type Socket<'a>
-        = TcpSocket<'a>
+        = TcpSocket<'a, 's>
     where
         Self: 'a;
 
@@ -56,18 +57,18 @@ impl TcpConnect for Tcp<'_> {
 
         socket
             .socket
-            .connect(to_emb_socket(remote).ok_or(TcpError::UnsupportedProto)?)
+            .connect(remote)
             .await?;
 
         Ok(socket)
     }
 }
 
-impl TcpBind for Tcp<'_> {
+impl<'s> TcpBind for Tcp<'s> {
     type Error = TcpError;
 
     type Accept<'a>
-        = TcpAccept<'a>
+        = TcpAccept<'s>
     where
         Self: 'a;
 
@@ -89,42 +90,46 @@ pub struct TcpAccept<'d> {
     local: SocketAddr,
 }
 
-impl edge_nal::TcpAccept for TcpAccept<'_> {
+impl<'s> edge_nal::TcpAccept for TcpAccept<'s> {
     type Error = TcpError;
 
     type Socket<'a>
-        = TcpSocket<'a>
+        = TcpSocket<'a, 's>
     where
         Self: 'a;
 
     async fn accept(&self) -> Result<(SocketAddr, Self::Socket<'_>), Self::Error> {
+        let mut listener = TcpListener::new(self.stack.stack)?;
+
+        listener.listen(self.local)?;
+        
         let mut socket = TcpSocket::new(self.stack.stack, self.stack.buffers)?;
 
         socket
             .socket
-            .accept(to_emb_bind_socket(self.local).ok_or(TcpError::UnsupportedProto)?)
+            .accept(listener.accept().await?)
             .await?;
 
-        let local_endpoint = unwrap!(socket.socket.local_endpoint());
+        let local_endpoint = unwrap!(socket.socket.local_addr());
 
-        Ok((to_net_socket(local_endpoint), socket))
+        Ok((local_endpoint.into(), socket))
     }
 }
 
 /// A type that represents a TCP socket
 /// Implements the `Read` and `Write` traits from `embedded-io-async`, as well as the `TcpSplit` factory trait from `edge-nal`
-pub struct TcpSocket<'d> {
+pub struct TcpSocket<'d, 's> {
     /// The underlying Embassy TCP socket.
-    socket: embassy_net::tcp::TcpSocket<'d>,
+    socket: embassy_net::tcp::TcpSocket<'d, 's>,
     /// The pool of TCP socket buffers used by this socket.
     stack_buffers: &'d dyn DynPool<TcpSocketBuffers>,
     /// The token used to identify the socket buffers in the pool.
     buffer_token: NonNull<u8>,
 }
 
-impl<'d> TcpSocket<'d> {
+impl<'d, 's> TcpSocket<'d, 's> {
     fn new(
-        stack: Stack<'d>,
+        stack: Stack<'s>,
         stack_buffers: &'d dyn DynPool<TcpSocketBuffers>,
     ) -> Result<Self, TcpError> {
         let socket_buffers = stack_buffers.alloc().ok_or(TcpError::NoBuffers)?;
@@ -147,14 +152,14 @@ impl<'d> TcpSocket<'d> {
                         socket_buffers.tx_buf_len,
                     )
                 },
-            ),
+            )?,
             stack_buffers,
             buffer_token: socket_buffers.token,
         })
     }
 
     async fn close(&mut self, what: Close) -> Result<(), TcpError> {
-        async fn discard_all_data(rx: &mut TcpReader<'_>) -> Result<(), TcpError> {
+        async fn discard_all_data(rx: &mut TcpReader<'_, '_>) -> Result<(), TcpError> {
             let mut buf = [0; 32];
 
             while rx.read(&mut buf).await? > 0 {}
@@ -194,7 +199,7 @@ impl<'d> TcpSocket<'d> {
     }
 }
 
-impl Drop for TcpSocket<'_> {
+impl Drop for TcpSocket<'_, '_> {
     fn drop(&mut self) {
         self.socket.close();
         unsafe {
@@ -203,17 +208,17 @@ impl Drop for TcpSocket<'_> {
     }
 }
 
-impl ErrorType for TcpSocket<'_> {
+impl ErrorType for TcpSocket<'_, '_> {
     type Error = TcpError;
 }
 
-impl Read for TcpSocket<'_> {
+impl Read for TcpSocket<'_, '_> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         Ok(self.socket.read(buf).await?)
     }
 }
 
-impl Write for TcpSocket<'_> {
+impl Write for TcpSocket<'_, '_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         Ok(self.socket.write(buf).await?)
     }
@@ -225,7 +230,7 @@ impl Write for TcpSocket<'_> {
     }
 }
 
-impl Readable for TcpSocket<'_> {
+impl Readable for TcpSocket<'_, '_> {
     async fn readable(&mut self) -> Result<(), Self::Error> {
         // embassy-net's wait_read_ready() only returns when can_recv() is true (data available),
         // but does not return when the peer closes the connection (FIN received) with empty buffer.
@@ -265,7 +270,7 @@ impl Readable for TcpSocket<'_> {
     }
 }
 
-impl TcpShutdown for TcpSocket<'_> {
+impl TcpShutdown for TcpSocket<'_, '_> {
     async fn close(&mut self, what: Close) -> Result<(), Self::Error> {
         TcpSocket::close(self, what).await
     }
@@ -277,19 +282,19 @@ impl TcpShutdown for TcpSocket<'_> {
 
 /// A type that represents the read half of a split TCP socket.
 /// Implements the `Read` trait from `embedded-io-async`.
-pub struct TcpSocketRead<'a>(TcpReader<'a>);
+pub struct TcpSocketRead<'a, 's>(TcpReader<'a, 's>);
 
-impl ErrorType for TcpSocketRead<'_> {
+impl ErrorType for TcpSocketRead<'_, '_> {
     type Error = TcpError;
 }
 
-impl Read for TcpSocketRead<'_> {
+impl Read for TcpSocketRead<'_, '_> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         self.0.read(buf).await.map_err(TcpError::from)
     }
 }
 
-impl Readable for TcpSocketRead<'_> {
+impl Readable for TcpSocketRead<'_, '_> {
     /// Wait until the socket becomes readable.
     ///
     /// Note: TcpReader doesn't expose may_recv(), so we cannot detect FIN closure here.
@@ -303,13 +308,13 @@ impl Readable for TcpSocketRead<'_> {
 
 /// A type that represents the write half of a split TCP socket.
 /// Implements the `Write` trait from `embedded-io-async`.
-pub struct TcpSocketWrite<'a>(TcpWriter<'a>);
+pub struct TcpSocketWrite<'a, 's>(TcpWriter<'a, 's>);
 
-impl ErrorType for TcpSocketWrite<'_> {
+impl ErrorType for TcpSocketWrite<'_, '_> {
     type Error = TcpError;
 }
 
-impl Write for TcpSocketWrite<'_> {
+impl Write for TcpSocketWrite<'_, '_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         self.0.write(buf).await.map_err(TcpError::from)
     }
@@ -319,14 +324,14 @@ impl Write for TcpSocketWrite<'_> {
     }
 }
 
-impl TcpSplit for TcpSocket<'_> {
+impl<'s> TcpSplit for TcpSocket<'_, 's> {
     type Read<'a>
-        = TcpSocketRead<'a>
+        = TcpSocketRead<'a, 's>
     where
         Self: 'a;
 
     type Write<'a>
-        = TcpSocketWrite<'a>
+        = TcpSocketWrite<'a, 's>
     where
         Self: 'a;
 
@@ -343,6 +348,7 @@ impl TcpSplit for TcpSocket<'_> {
 pub enum TcpError {
     /// A general TCP error.
     General(Error),
+    Full(Full),
     /// An error that occurred while connecting.
     Connect(ConnectError),
     /// An error that occurred while accepting a connection.
@@ -351,6 +357,7 @@ pub enum TcpError {
     NoBuffers,
     /// The provided socket address uses an unsupported protocol.
     UnsupportedProto,
+    Listen(ListenError),
 }
 
 impl From<Error> for TcpError {
@@ -371,14 +378,28 @@ impl From<AcceptError> for TcpError {
     }
 }
 
+impl From<Full> for TcpError {
+    fn from(e: Full) -> Self {
+        TcpError::Full(e)
+    }
+}
+
+impl From<ListenError> for TcpError {
+    fn from(value: ListenError) -> Self {
+        TcpError::Listen(value)
+    }
+}
+
 impl Display for TcpError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             TcpError::General(e) => write!(f, "TCP general error: {:?}", e),
+            TcpError::Full(e) => write!(f, "stack full error: {:?}", e),
             TcpError::Connect(e) => write!(f, "TCP connect error: {:?}", e),
             TcpError::Accept(e) => write!(f, "TCP accept error: {:?}", e),
             TcpError::NoBuffers => write!(f, "TCP no buffers available"),
             TcpError::UnsupportedProto => write!(f, "TCP unsupported protocol"),
+            TcpError::Listen(e) => write!(f, "TCP listen error: {:?}", e),
         }
     }
 }
@@ -389,10 +410,12 @@ impl embedded_io_async::Error for TcpError {
     fn kind(&self) -> ErrorKind {
         match self {
             TcpError::General(_) => ErrorKind::Other,
+            TcpError::Full(_) => ErrorKind::Other,
             TcpError::Connect(_) => ErrorKind::Other,
             TcpError::Accept(_) => ErrorKind::Other,
             TcpError::NoBuffers => ErrorKind::OutOfMemory,
             TcpError::UnsupportedProto => ErrorKind::InvalidInput,
+            TcpError::Listen(_) => ErrorKind::Other,
         }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "edge-nal-embassy"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 rust-version = "1.91"
 description = "An implementation of edge-nal based on `embassy-net`"
@@ -18,17 +18,17 @@ categories = [
 default = ["all"]
 all = ["proto-ipv4", "proto-ipv6", "medium-ethernet", "medium-ip", "dns", "udp", "tcp", "multicast", "icmp", "dhcpv4", "dhcpv4-hostname"]
 defmt = ["dep:defmt", "embassy-net/defmt"]
-proto-ipv4 = ["embassy-net/proto-ipv4"]
-proto-ipv6 = ["embassy-net/proto-ipv6"]
+proto-ipv4 = ["embassy-net/ipv4"]
+proto-ipv6 = ["embassy-net/ipv6"]
 medium-ethernet = ["embassy-net/medium-ethernet"]
 medium-ip = ["embassy-net/medium-ip"]
 dns = ["embassy-net/dns"]
 udp = ["embassy-net/udp"]
 tcp = ["embassy-net/tcp"]
-icmp = ["embassy-net/icmp"]
+icmp = []
 multicast = ["embassy-net/multicast"]
 dhcpv4 = ["embassy-net/dhcpv4"]
-dhcpv4-hostname = ["embassy-net/dhcpv4-hostname"]
+dhcpv4-hostname = []
 slaac = ["proto-ipv6", "embassy-net/slaac"]
 
 [dependencies]
@@ -36,8 +36,9 @@ log = { workspace = true, default-features = false, optional = true }
 defmt = { workspace = true, default-features = false, optional = true }
 embedded-io-async = { workspace = true }
 edge-nal = { workspace = true }
-embassy-net = { workspace = true }
+embassy-net = { workspace = true, features = ["tcp-listener", "icmp-errors"] }
 embassy-futures = { workspace = true }
+xarxa = { version = "0.1", default-features = false, features = ["async"], registry = "kellnr" }
 
 [dev-dependencies]
 # The socket tests construct an `embassy-net` stack, which needs a time driver

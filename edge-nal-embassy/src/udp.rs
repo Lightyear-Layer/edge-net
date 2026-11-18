@@ -6,13 +6,14 @@ use edge_nal::{
     MulticastV4, MulticastV6, Readable, UdpBind, UdpReceive, UdpSend, UdpSplit, UdpSplitMulticast,
 };
 
-use embassy_net::udp::{BindError, PacketMetadata, RecvError, SendError};
+use embassy_net::udp::{BindError, PacketMeta, RecvError, SendError};
 use embassy_net::Stack;
 
 use embedded_io_async::{ErrorKind, ErrorType};
+use xarxa::error::Full;
 
 use crate::sealed::SealedDynPool;
-use crate::{to_emb_bind_socket, to_emb_socket, to_net_socket, DynPool, Pool};
+use crate::{DynPool, Pool};
 
 /// A type that implements the `UdpBind` factory trait from `edge-nal`.
 /// Uses the provided Embassy networking stack and UDP buffers pool to create UDP sockets.
@@ -40,11 +41,11 @@ impl<'d> Udp<'d> {
     }
 }
 
-impl UdpBind for Udp<'_> {
+impl<'s> UdpBind for Udp<'s> {
     type Error = UdpError;
 
     type Socket<'a>
-        = UdpSocket<'a>
+        = UdpSocket<'s>
     where
         Self: 'a;
 
@@ -53,7 +54,7 @@ impl UdpBind for Udp<'_> {
 
         socket
             .socket
-            .bind(to_emb_bind_socket(local).ok_or(UdpError::UnsupportedProto)?)?;
+            .bind(local, 0)?;
 
         Ok(socket)
     }
@@ -87,31 +88,7 @@ impl<'d> UdpSocket<'d> {
             stack,
             socket: embassy_net::udp::UdpSocket::new(
                 stack,
-                unsafe {
-                    core::slice::from_raw_parts_mut(
-                        socket_buffers.md_rx_buf.as_ptr(),
-                        socket_buffers.md_buf_len,
-                    )
-                },
-                unsafe {
-                    core::slice::from_raw_parts_mut(
-                        socket_buffers.rx_buf.as_ptr(),
-                        socket_buffers.rx_buf_len,
-                    )
-                },
-                unsafe {
-                    core::slice::from_raw_parts_mut(
-                        socket_buffers.md_tx_buf.as_ptr(),
-                        socket_buffers.md_buf_len,
-                    )
-                },
-                unsafe {
-                    core::slice::from_raw_parts_mut(
-                        socket_buffers.tx_buf.as_ptr(),
-                        socket_buffers.tx_buf_len,
-                    )
-                },
-            ),
+            )?,
             stack_buffers,
             buffer_token: socket_buffers.token,
         })
@@ -122,18 +99,7 @@ impl<'d> UdpSocket<'d> {
         #[allow(unused)] multicast_addr: Ipv4Addr,
         _interface: Ipv4Addr,
     ) -> Result<(), UdpError> {
-        #[cfg(feature = "multicast")]
-        {
-            self.stack.join_multicast_group(
-                crate::to_emb_addr(core::net::IpAddr::V4(multicast_addr))
-                    .ok_or(UdpError::UnsupportedProto)?,
-            )?;
-        }
-
-        #[cfg(not(feature = "multicast"))]
-        {
-            Err(UdpError::UnsupportedProto)?;
-        }
+        Err(UdpError::UnsupportedProto)?;
 
         Ok(())
     }
@@ -143,18 +109,7 @@ impl<'d> UdpSocket<'d> {
         #[allow(unused)] multicast_addr: Ipv4Addr,
         _interface: Ipv4Addr,
     ) -> Result<(), UdpError> {
-        #[cfg(feature = "multicast")]
-        {
-            self.stack.leave_multicast_group(
-                crate::to_emb_addr(core::net::IpAddr::V4(multicast_addr))
-                    .ok_or(UdpError::UnsupportedProto)?,
-            )?;
-        }
-
-        #[cfg(not(feature = "multicast"))]
-        {
-            Err(UdpError::UnsupportedProto)?;
-        }
+        Err(UdpError::UnsupportedProto)?;
 
         Ok(())
     }
@@ -164,18 +119,7 @@ impl<'d> UdpSocket<'d> {
         #[allow(unused)] multicast_addr: Ipv6Addr,
         _interface: u32,
     ) -> Result<(), UdpError> {
-        #[cfg(feature = "multicast")]
-        {
-            self.stack.join_multicast_group(
-                crate::to_emb_addr(core::net::IpAddr::V6(multicast_addr))
-                    .ok_or(UdpError::UnsupportedProto)?,
-            )?;
-        }
-
-        #[cfg(not(feature = "multicast"))]
-        {
-            Err(UdpError::UnsupportedProto)?;
-        }
+        Err(UdpError::UnsupportedProto)?;
 
         Ok(())
     }
@@ -185,18 +129,7 @@ impl<'d> UdpSocket<'d> {
         #[allow(unused)] multicast_addr: Ipv6Addr,
         _interface: u32,
     ) -> Result<(), UdpError> {
-        #[cfg(feature = "multicast")]
-        {
-            self.stack.leave_multicast_group(
-                crate::to_emb_addr(core::net::IpAddr::V6(multicast_addr))
-                    .ok_or(UdpError::UnsupportedProto)?,
-            )?;
-        }
-
-        #[cfg(not(feature = "multicast"))]
-        {
-            Err(UdpError::UnsupportedProto)?;
-        }
+        Err(UdpError::UnsupportedProto)?;
 
         Ok(())
     }
@@ -219,7 +152,7 @@ impl UdpReceive for UdpSocket<'_> {
     async fn receive(&mut self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), Self::Error> {
         let (len, remote_endpoint) = self.socket.recv_from(buffer).await?;
 
-        Ok((len, to_net_socket(remote_endpoint.endpoint)))
+        Ok((len, remote_endpoint.remote_addr.into()))
     }
 }
 
@@ -228,7 +161,7 @@ impl UdpSend for UdpSocket<'_> {
         self.socket
             .send_to(
                 data,
-                to_emb_socket(remote).ok_or(UdpError::UnsupportedProto)?,
+                remote,
             )
             .await?;
 
@@ -244,7 +177,7 @@ impl UdpReceive for &UdpSocket<'_> {
     async fn receive(&mut self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), Self::Error> {
         let (len, remote_endpoint) = self.socket.recv_from(buffer).await?;
 
-        Ok((len, to_net_socket(remote_endpoint.endpoint)))
+        Ok((len, remote_endpoint.remote_addr.into()))
     }
 }
 
@@ -253,7 +186,7 @@ impl UdpSend for &UdpSocket<'_> {
         self.socket
             .send_to(
                 data,
-                to_emb_socket(remote).ok_or(UdpError::UnsupportedProto)?,
+                remote,
             )
             .await?;
 
@@ -404,6 +337,7 @@ pub enum UdpError {
     NoBuffers,
     /// The provided protocol is not supported.
     UnsupportedProto,
+    Full(Full),
 }
 
 impl From<RecvError> for UdpError {
@@ -424,6 +358,12 @@ impl From<BindError> for UdpError {
     }
 }
 
+impl From<Full> for UdpError {
+    fn from(value: Full) -> Self {
+        Self::Full(value)
+    }
+}
+
 impl Display for UdpError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -438,6 +378,7 @@ impl Display for UdpError {
             }
             UdpError::NoBuffers => write!(f, "No UDP socket buffers available"),
             UdpError::UnsupportedProto => write!(f, "Unsupported protocol"),
+            Self::Full(e) => write!(f, "full error: {:?}", e),
         }
     }
 }
@@ -448,11 +389,11 @@ impl core::error::Error for UdpError {}
     feature = "multicast",
     any(feature = "proto-ipv4", feature = "proto-ipv6")
 ))]
-impl From<embassy_net::MulticastError> for UdpError {
-    fn from(e: embassy_net::MulticastError) -> Self {
+impl From<embassy_net::iface::MulticastError> for UdpError {
+    fn from(e: embassy_net::iface::MulticastError) -> Self {
         match e {
-            embassy_net::MulticastError::GroupTableFull => UdpError::MulticastGroupTableFull,
-            embassy_net::MulticastError::Unaddressable => UdpError::MulticastUnaddressable,
+            embassy_net::iface::MulticastError::TooManyGroups => UdpError::MulticastGroupTableFull,
+            embassy_net::iface::MulticastError::Unaddressable => UdpError::MulticastUnaddressable,
         }
     }
 }
@@ -467,6 +408,7 @@ impl embedded_io_async::Error for UdpError {
             UdpError::MulticastUnaddressable => ErrorKind::Other,
             UdpError::NoBuffers => ErrorKind::OutOfMemory,
             UdpError::UnsupportedProto => ErrorKind::InvalidInput,
+            UdpError::Full(_) => ErrorKind::Other,
         }
     }
 }
@@ -478,11 +420,11 @@ pub struct UdpSocketBuffers {
     /// A token used to identify the buffer in the pool.
     token: NonNull<u8>,
     /// The metadata buffer for receiving packets.
-    md_rx_buf: NonNull<PacketMetadata>,
+    md_rx_buf: NonNull<PacketMeta>,
     /// The buffer for receiving packets.
     rx_buf: NonNull<u8>,
     /// The metadata buffer for transmitting packets.
-    md_tx_buf: NonNull<PacketMetadata>,
+    md_tx_buf: NonNull<PacketMeta>,
     /// The buffer for transmitting packets.
     tx_buf: NonNull<u8>,
     /// The length of a metadata buffer.
@@ -503,8 +445,8 @@ pub type UdpBuffers<
     (
         [u8; TX_SZ],
         [u8; RX_SZ],
-        [PacketMetadata; M],
-        [PacketMetadata; M],
+        [PacketMeta; M],
+        [PacketMeta; M],
     ),
     N,
 >;
@@ -526,8 +468,8 @@ impl<const N: usize, const TX_SZ: usize, const RX_SZ: usize, const M: usize>
             (
                 core::ptr::addr_of_mut!((*slot).0) as *mut u8,
                 core::ptr::addr_of_mut!((*slot).1) as *mut u8,
-                core::ptr::addr_of_mut!((*slot).2) as *mut PacketMetadata,
-                core::ptr::addr_of_mut!((*slot).3) as *mut PacketMetadata,
+                core::ptr::addr_of_mut!((*slot).2) as *mut PacketMeta,
+                core::ptr::addr_of_mut!((*slot).3) as *mut PacketMeta,
             )
         };
 
@@ -550,8 +492,8 @@ impl<const N: usize, const TX_SZ: usize, const RX_SZ: usize, const M: usize>
                 buffer_token.cast::<(
                     [u8; TX_SZ],
                     [u8; RX_SZ],
-                    [PacketMetadata; M],
-                    [PacketMetadata; M],
+                    [PacketMeta; M],
+                    [PacketMeta; M],
                 )>(),
             );
         }
@@ -565,7 +507,7 @@ impl<const N: usize, const TX_SZ: usize, const RX_SZ: usize, const M: usize>
 
 #[cfg(test)]
 mod test {
-    use embassy_net::udp::PacketMetadata;
+    use embassy_net::udp::PacketMeta;
     use embassy_net::StackResources;
 
     use crate::sealed::SealedDynPool;
@@ -598,12 +540,12 @@ mod test {
             // All eight buffers are live at the same time and must not overlap
             a_tx.fill(1);
             a_rx.fill(2);
-            a_md_tx.fill(PacketMetadata::EMPTY);
-            a_md_rx.fill(PacketMetadata::EMPTY);
+            a_md_tx.fill(PacketMeta::EMPTY);
+            a_md_rx.fill(PacketMeta::EMPTY);
             b_tx.fill(3);
             b_rx.fill(4);
-            b_md_tx.fill(PacketMetadata::EMPTY);
-            b_md_rx.fill(PacketMetadata::EMPTY);
+            b_md_tx.fill(PacketMeta::EMPTY);
+            b_md_rx.fill(PacketMeta::EMPTY);
             assert!(a_tx.iter().all(|v| *v == 1));
             assert!(a_rx.iter().all(|v| *v == 2));
             assert!(b_tx.iter().all(|v| *v == 3));
